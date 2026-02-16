@@ -79,7 +79,7 @@
         .player-card.dead::after {
             content: "GAME OVER"; position: absolute; top: 50%; left: 50%;
             transform: translate(-50%, -50%); font-size: 2rem; color: #ff4757;
-            text-shadow: 2px 2px 0 #000;
+            text-shadow: 2px 2px 0 #000; pointer-events: none;
         }
 
         canvas { background: #000; display: block; margin: 0 auto; border-radius: 4px; }
@@ -122,9 +122,17 @@
         th { text-align: left; border-bottom: 2px solid #555; padding: 10px; color: #ffe600; }
         td { text-align: left; padding: 12px 10px; border-bottom: 1px solid #333; }
         
-        .rank-1 { color: #ffe600; font-size: 1.3rem; } /* Ouro */
-        .rank-2 { color: #c0c0c0; } /* Prata */
-        .rank-3 { color: #cd7f32; } /* Bronze */
+        .rank-1 { color: #ffe600; font-size: 1.3rem; }
+        .rank-2 { color: #c0c0c0; }
+        .rank-3 { color: #cd7f32; }
+
+        #connection-status {
+            position: fixed; top: 60px; right: 20px; padding: 8px 15px;
+            border-radius: 20px; font-size: 0.85rem; z-index: 60;
+            background: #333; border: 2px solid #555;
+        }
+        .status-connected { border-color: #2ed573; color: #2ed573; }
+        .status-disconnected { border-color: #ff4757; color: #ff4757; }
 
     </style>
 </head>
@@ -156,8 +164,10 @@
             <button id="btn-ready" class="btn-ready not-ready" onclick="toggleReady()">NÃO ESTOU PRONTO</button>
         </div>
 
-        <div id="lobby-status" style="margin-top:20px; color:#aaa; font-size: 1.1rem;">Aguardando conexão...</div>
+        <div id="lobby-status" style="margin-top:20px; color:#aaa; font-size: 1.1rem;">Conectando ao servidor...</div>
     </div>
+
+    <div id="connection-status" class="status-disconnected">● Desconectado</div>
 
     <div id="hud">
         <button class="hud-btn" id="btn-music" onclick="toggleMusic()">🔇 Música: OFF</button>
@@ -177,52 +187,176 @@
                     <th>Pontos</th>
                 </tr>
             </thead>
-            <tbody id="ranking-body">
-                </tbody>
+            <tbody id="ranking-body"></tbody>
         </table>
         <button class="btn-ready is-ready" onclick="requestReset()">VOLTAR AO LOBBY</button>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
-        const socket = io();
-        
-        // --- ELEMENTOS HTML ---
-        const lobbyScreen = document.getElementById('lobby-screen');
-        const rankingScreen = document.getElementById('ranking-screen');
-        const gameArea = document.getElementById('game-area');
-        const btnStop = document.getElementById('btn-stop');
-        const btnMusic = document.getElementById('btn-music');
-        
-        // --- ESTADO DO JOGO ---
-        let isGameRunning = false;
-        let isLocalReady = false;
-        let isDead = false;
-        let localName = "";
-        let dropInterval = 1000;
-        
-        // --- SINTETIZADOR DE MÚSICA 8-BIT (Gerado via Código) ---
+        // ===================================
+        // GERENCIADOR DE ESTADO GLOBAL
+        // ===================================
+        const GameState = {
+            socket: null,
+            isConnected: false,
+            isGameRunning: false,
+            isLocalReady: false,
+            isDead: false,
+            localPlayerId: null,
+            localName: "",
+            dropInterval: 1000,
+            settings: { speed: 1, winLimit: 3 },
+            players: {},
+            localGame: null,
+            opponents: {},
+            lastEmitTime: 0,
+            emitThrottle: 50 // ms
+        };
+
+        // ===================================
+        // SISTEMA DE CONEXÃO E RECONEXÃO
+        // ===================================
+        function initSocket() {
+            GameState.socket = io({
+                reconnection: true,
+                reconnectionDelay: 1000,
+                reconnectionAttempts: 5
+            });
+
+            const socket = GameState.socket;
+
+            socket.on('connect', () => {
+                console.log('✅ Conectado ao servidor');
+                GameState.isConnected = true;
+                GameState.localPlayerId = socket.id;
+                updateConnectionStatus(true);
+                document.getElementById('lobby-status').innerText = 'Conectado! Aguardando outros jogadores...';
+            });
+
+            socket.on('disconnect', (reason) => {
+                console.warn('❌ Desconectado:', reason);
+                GameState.isConnected = false;
+                updateConnectionStatus(false);
+                document.getElementById('lobby-status').innerText = 'Desconectado do servidor. Tentando reconectar...';
+            });
+
+            socket.on('connect_error', (error) => {
+                console.error('Erro de conexão:', error);
+                updateConnectionStatus(false);
+            });
+
+            // ===================================
+            // EVENTOS DO LOBBY
+            // ===================================
+            socket.on('updateSettings', (settings) => {
+                if (!settings) return;
+                GameState.settings = settings;
+                document.getElementById('inp-speed').value = settings.speed;
+                document.getElementById('disp-speed').innerText = settings.speed;
+                document.getElementById('inp-wins').value = settings.winLimit;
+                GameState.dropInterval = Math.max(50, 1000 - ((settings.speed - 1) * 45));
+            });
+
+            socket.on('updatePlayerList', (players) => {
+                if (!players) return;
+                GameState.players = players;
+                const total = Object.keys(players).length;
+                const ready = Object.values(players).filter(p => p.isReady).length;
+                document.getElementById('lobby-status').innerText = `${ready} de ${total} jogadores prontos`;
+            });
+
+            // ===================================
+            // EVENTOS DE JOGO
+            // ===================================
+            socket.on('startGame', (players) => {
+                if (!players) return;
+                console.log('🎮 Iniciando jogo com jogadores:', Object.keys(players).length);
+                startGame(players);
+            });
+
+            socket.on('startNextRound', () => {
+                console.log('🔄 Próximo round iniciando...');
+                if (GameState.isGameRunning) {
+                    startRound();
+                }
+            });
+
+            socket.on('newPlayer', (playerData) => {
+                if (!playerData || !GameState.isGameRunning) return;
+                console.log('➕ Novo jogador:', playerData.name);
+                if (playerData.id !== socket.id && !GameState.opponents[playerData.id]) {
+                    addOpponent(playerData.id, playerData);
+                }
+            });
+
+            socket.on('playerLeft', (playerId) => {
+                console.log('➖ Jogador saiu:', playerId);
+                removeOpponent(playerId);
+            });
+
+            socket.on('playerUpdated', (data) => {
+                if (!data || !data.id || data.id === socket.id) return;
+                updateOpponent(data);
+            });
+
+            socket.on('playerDied', (playerId) => {
+                if (playerId === socket.id) return;
+                console.log('💀 Jogador morreu:', playerId);
+                markOpponentDead(playerId);
+            });
+
+            socket.on('receiveGarbage', (data) => {
+                if (!data || !GameState.isGameRunning || GameState.isDead) return;
+                console.log('📦 Recebendo lixo:', data.lines);
+                receiveGarbage(data.lines);
+            });
+
+            socket.on('roundOver', (data) => {
+                if (!data) return;
+                console.log('🏁 Round finalizado. Vencedor:', data.winnerName);
+                handleRoundOver(data);
+            });
+
+            socket.on('resetToLobby', () => {
+                console.log('🔙 Retornando ao lobby');
+                resetToLobby();
+            });
+        }
+
+        function updateConnectionStatus(connected) {
+            const status = document.getElementById('connection-status');
+            if (connected) {
+                status.className = 'status-connected';
+                status.innerText = '● Conectado';
+            } else {
+                status.className = 'status-disconnected';
+                status.innerText = '● Desconectado';
+            }
+        }
+
+        // ===================================
+        // SINTETIZADOR DE MÚSICA 8-BIT
+        // ===================================
         class TetrisSynth {
             constructor() {
                 this.ctx = new (window.AudioContext || window.webkitAudioContext)();
                 this.isPlaying = false;
-                this.tempo = 145; // Um pouco mais rápido pra dar emoção
+                this.tempo = 145;
                 this.nextNoteTime = 0;
                 this.noteIndex = 0;
                 this.timerID = null;
                 
-                // Frequências das notas (Tabela padrão)
                 this.notes = {
                     'E5': 659.25, 'B4': 493.88, 'C5': 523.25, 'D5': 587.33, 'A4': 440.00,
                     'G#4': 415.30, 'G4': 392.00, 'F4': 349.23, 'E4': 329.63
                 };
 
-                // Partitura simplificada do Tetris (Korobeiniki)
                 this.melody = [
                     ['E5', 1], ['B4', 0.5], ['C5', 0.5], ['D5', 1], ['C5', 0.5], ['B4', 0.5],
                     ['A4', 1], ['A4', 0.5], ['C5', 0.5], ['E5', 1], ['D5', 0.5], ['C5', 0.5],
                     ['B4', 1.5], ['C5', 0.5], ['D5', 1], ['E5', 1],
-                    ['C5', 1], ['A4', 1], ['A4', 1], [null, 1], // Pausa
+                    ['C5', 1], ['A4', 1], ['A4', 1], [null, 1],
                     ['D5', 1.5], ['F4', 0.5], ['A4', 1], ['G4', 0.5], ['F4', 0.5],
                     ['E5', 1.5], ['C5', 0.5], ['E5', 1], ['D5', 0.5], ['C5', 0.5],
                     ['B4', 1], ['B4', 0.5], ['C5', 0.5], ['D5', 1], ['E5', 1],
@@ -236,15 +370,14 @@
                 while (this.nextNoteTime < this.ctx.currentTime + 0.1) {
                     const note = this.melody[this.noteIndex];
                     
-                    if (note[0]) { 
+                    if (note[0]) {
                         const osc = this.ctx.createOscillator();
                         const gain = this.ctx.createGain();
                         
-                        osc.type = 'square'; // Onda quadrada = som de Nintendinho
+                        osc.type = 'square';
                         osc.frequency.value = this.notes[note[0]];
                         
-                        // Volume e Envelope (Fade out curto)
-                        gain.gain.value = 0.05; 
+                        gain.gain.value = 0.05;
                         gain.gain.exponentialRampToValueAtTime(0.001, this.nextNoteTime + (note[1] * secondsPerBeat));
 
                         osc.connect(gain);
@@ -274,14 +407,14 @@
 
             stop() {
                 this.isPlaying = false;
-                cancelAnimationFrame(this.timerID);
+                if (this.timerID) cancelAnimationFrame(this.timerID);
             }
         }
 
-        // Instancia o Sintetizador
         const musicSynth = new TetrisSynth();
 
         function toggleMusic() {
+            const btnMusic = document.getElementById('btn-music');
             if (!musicSynth.isPlaying) {
                 musicSynth.play();
                 btnMusic.innerText = "🔊 Música: ON";
@@ -295,35 +428,43 @@
             }
         }
 
-        // Tenta destravar o áudio do navegador no primeiro clique
         document.body.addEventListener('click', () => {
             if (musicSynth.ctx.state === 'suspended') musicSynth.ctx.resume();
         }, { once: true });
 
-
-        // --- LÓGICA DO LOBBY ---
+        // ===================================
+        // FUNÇÕES DO LOBBY
+        // ===================================
         function emitSettings() {
-            const speed = document.getElementById('inp-speed').value;
-            const wins = document.getElementById('inp-wins').value;
-            socket.emit('changeSettings', { speed: parseInt(speed), winLimit: parseInt(wins) });
+            if (!GameState.isConnected) return;
+            const speed = parseInt(document.getElementById('inp-speed').value);
+            const wins = parseInt(document.getElementById('inp-wins').value);
+            document.getElementById('disp-speed').innerText = speed;
+            GameState.socket.emit('changeSettings', { speed, winLimit: wins });
         }
 
         function toggleReady() {
             const nameInput = document.getElementById('inp-name');
-            if(nameInput.value.trim() === "") {
+            const name = nameInput.value.trim();
+            
+            if (!name) {
                 alert("Por favor, digite um Nickname antes de começar!");
                 return;
             }
-            localName = nameInput.value;
+
+            if (!GameState.isConnected) {
+                alert("Aguarde a conexão com o servidor!");
+                return;
+            }
             
-            isLocalReady = !isLocalReady;
+            GameState.localName = name;
+            GameState.isLocalReady = !GameState.isLocalReady;
             const btn = document.getElementById('btn-ready');
             
-            if (isLocalReady) {
+            if (GameState.isLocalReady) {
                 btn.className = 'btn-ready is-ready';
                 btn.innerText = "AGUARDANDO...";
                 nameInput.disabled = true;
-                // Destrava áudio aqui também por garantia
                 if (musicSynth.ctx.state === 'suspended') musicSynth.ctx.resume();
             } else {
                 btn.className = 'btn-ready not-ready';
@@ -331,131 +472,27 @@
                 nameInput.disabled = false;
             }
             
-            socket.emit('playerReady', { state: isLocalReady, name: localName });
+            GameState.socket.emit('playerReady', { state: GameState.isLocalReady, name: GameState.localName });
         }
 
-        // Sincroniza configurações vindas do servidor
-        socket.on('updateSettings', (settings) => {
-            document.getElementById('inp-speed').value = settings.speed;
-            document.getElementById('disp-speed').innerText = settings.speed;
-            document.getElementById('inp-wins').value = settings.winLimit;
-            // Cálculo de velocidade: Nível 1 = 1000ms, Nível 20 = ~50ms
-            dropInterval = Math.max(50, 1000 - ((settings.speed - 1) * 45));
-        });
-
-        socket.on('updatePlayerList', (players) => {
-            const total = Object.keys(players).length;
-            const ready = Object.values(players).filter(p => p.isReady).length;
-            document.getElementById('lobby-status').innerText = `${ready} de ${total} jogadores prontos`;
-        });
-
-        // --- INÍCIO DE JOGO ---
-        socket.on('startGame', (players) => {
-            lobbyScreen.style.opacity = 0;
-            setTimeout(() => lobbyScreen.style.display = 'none', 300);
-            rankingScreen.style.display = 'none';
-            btnStop.style.display = 'block';
-            
-            isGameRunning = true;
-            
-            gameArea.innerHTML = ''; 
-            opponents = {}; 
-            
-            // Cria tabuleiro local
-            localGame = new TetrisRenderer('local', true, localName);
-            
-            // Cria tabuleiros dos oponentes
-            Object.values(players).forEach(p => {
-                if(p.id !== socket.id) addOpponent(p.id, p);
-            });
-
-            startRound();
-            
-            // Toca a música automaticamente se não estiver tocando
-            if(!musicSynth.isPlaying) toggleMusic();
-        });
-
-        function startRound() {
-            isDead = false;
-            localGame.element.classList.remove('dead');
-            resetPlayer();
-            update();
-        }
-
-        socket.on('startNextRound', () => {
-            startRound();
-        });
-
-        // --- RESET / PARAR ---
         function requestReset() {
-            if(confirm("Parar a partida e voltar todos para o Lobby?")) {
-                socket.emit('requestReset');
+            if (confirm("Parar a partida e voltar todos para o Lobby?")) {
+                GameState.socket.emit('requestReset');
             }
         }
 
-        socket.on('resetToLobby', () => {
-            isGameRunning = false;
-            lobbyScreen.style.display = 'flex';
-            setTimeout(() => lobbyScreen.style.opacity = 1, 50);
-            rankingScreen.style.display = 'none';
-            btnStop.style.display = 'none';
-            
-            isLocalReady = false;
-            const btn = document.getElementById('btn-ready');
-            btn.className = 'btn-ready not-ready';
-            btn.innerText = "NÃO ESTOU PRONTO";
-            document.getElementById('inp-name').disabled = false;
-            
-            if(musicSynth.isPlaying) toggleMusic(); // Para a música no lobby
-        });
+        // ===================================
+        // CLASSE RENDERIZADORA
+        // ===================================
+        const COLORS = [null,'#00f0f0','#f0a000','#0000f0','#f0f000','#00f000','#a000f0','#f00000','#555'];
 
-        // --- FIM DE ROUND / RANKING ---
-        socket.on('roundOver', (data) => {
-            // Atualiza vitórias visualmente
-            if(data.winnerId === socket.id) localGame.updateWins(data.wins);
-            else if(opponents[data.winnerId]) opponents[data.winnerId].updateWins(data.wins);
-
-            // Se acabou a partida (Melhor de X)
-            if (data.isMatchOver) {
-                showRanking(data.players);
-            }
-        });
-
-        function showRanking(playersData) {
-            isGameRunning = false;
-            rankingScreen.style.display = 'block';
-            btnStop.style.display = 'none';
-            
-            const tbody = document.getElementById('ranking-body');
-            tbody.innerHTML = '';
-
-            // Ordena: Mais vitórias > Mais pontos
-            const ranking = Object.values(playersData).sort((a, b) => {
-                if (b.wins !== a.wins) return b.wins - a.wins;
-                return b.score - a.score;
-            });
-
-            ranking.forEach((p, index) => {
-                const tr = document.createElement('tr');
-                let rankClass = index === 0 ? 'rank-1' : (index === 1 ? 'rank-2' : (index === 2 ? 'rank-3' : ''));
-                let displayName = p.id === socket.id ? `${p.name} (Você)` : p.name;
-                
-                tr.innerHTML = `
-                    <td class="${rankClass}">#${index + 1}</td>
-                    <td>${displayName}</td>
-                    <td style="color:#ffe600; font-weight:bold">${p.wins}</td>
-                    <td>${p.score}</td>
-                `;
-                tbody.appendChild(tr);
-            });
-        }
-
-        // --- CLASSE RENDERIZADORA (Visual) ---
         class TetrisRenderer {
             constructor(id, isLocal, name) {
-                this.id = id; 
-                this.isLocal = isLocal; 
+                this.id = id;
+                this.isLocal = isLocal;
                 this.name = name;
+                this.wins = 0;
+                this.score = 0;
                 
                 this.element = document.createElement('div');
                 this.element.className = isLocal ? 'player-card local' : 'player-card';
@@ -468,286 +505,547 @@
                     </div>
                 `;
                 
-                // Coloca o jogador local sempre no começo da lista
-                if(isLocal) gameArea.prepend(this.element); 
+                const gameArea = document.getElementById('game-area');
+                if (isLocal) gameArea.prepend(this.element);
                 else gameArea.appendChild(this.element);
 
                 this.canvas = this.element.querySelector('canvas');
-                this.ctx = this.canvas.getContext('2d'); 
-                this.ctx.scale(20, 20); // 1 bloco = 20px
+                this.ctx = this.canvas.getContext('2d');
+                this.ctx.scale(20, 20);
                 
-                this.elScore = this.element.querySelector('.score-val'); 
+                this.elScore = this.element.querySelector('.score-val');
                 this.elWins = this.element.querySelector('.win-count');
                 
-                this.arena = createMatrix(12, 20);
-                this.player = { pos: {x:0,y:0}, matrix: null, score: 0 };
+                this.arena = this.createMatrix(12, 20);
+                this.player = { pos: { x: 0, y: 0 }, matrix: null };
             }
 
-            updateWins(n) { this.elWins.innerText = n; }
+            createMatrix(w, h) {
+                const m = [];
+                while (h--) m.push(new Array(w).fill(0));
+                return m;
+            }
+
+            updateScore(score) {
+                this.score = score;
+                this.elScore.innerText = score;
+            }
+
+            updateWins(wins) {
+                this.wins = wins;
+                this.elWins.innerText = wins;
+            }
+
+            markDead() {
+                this.element.classList.add('dead');
+            }
+
+            revive() {
+                this.element.classList.remove('dead');
+            }
 
             draw() {
                 // Fundo
-                this.ctx.fillStyle = '#000'; 
-                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                this.ctx.fillStyle = '#000';
+                this.ctx.fillRect(0, 0, 12, 20);
                 
-                // Arena (Blocos fixos + Lixo)
-                drawMatrix(this.ctx, this.arena, {x:0,y:0});
+                // Arena
+                this.drawMatrix(this.arena, { x: 0, y: 0 });
                 
-                // Peça atual + Ghost
-                if(this.isLocal && !isDead && this.player.matrix) {
-                    drawGhost(this.ctx, this.arena, this.player);
-                    drawMatrix(this.ctx, this.player.matrix, this.player.pos);
+                // Peça + Ghost (somente para jogador local)
+                if (this.isLocal && !GameState.isDead && this.player.matrix) {
+                    this.drawGhost();
+                    this.drawMatrix(this.player.matrix, this.player.pos);
                 }
+            }
+
+            drawMatrix(matrix, offset) {
+                matrix.forEach((row, y) => {
+                    row.forEach((value, x) => {
+                        if (value !== 0) {
+                            this.ctx.fillStyle = COLORS[value];
+                            this.ctx.fillRect(x + offset.x, y + offset.y, 1, 1);
+                            this.ctx.lineWidth = 0.05;
+                            this.ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+                            this.ctx.strokeRect(x + offset.x, y + offset.y, 1, 1);
+                        }
+                    });
+                });
+            }
+
+            drawGhost() {
+                const ghost = { ...this.player.pos };
+                while (!this.collide({ ...this.player, pos: ghost })) ghost.y++;
+                ghost.y--;
+                
+                this.player.matrix.forEach((row, y) => {
+                    row.forEach((v, x) => {
+                        if (v !== 0) {
+                            this.ctx.fillStyle = 'rgba(255,255,255,0.15)';
+                            this.ctx.fillRect(x + ghost.x, y + ghost.y, 1, 1);
+                            this.ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+                            this.ctx.lineWidth = 0.05;
+                            this.ctx.strokeRect(x + ghost.x, y + ghost.y, 1, 1);
+                        }
+                    });
+                });
+            }
+
+            collide(player) {
+                const [m, o] = [player.matrix, player.pos];
+                for (let y = 0; y < m.length; ++y) {
+                    for (let x = 0; x < m[y].length; ++x) {
+                        if (m[y][x] !== 0 && 
+                            (this.arena[y + o.y] === undefined ||
+                             this.arena[y + o.y][x + o.x] === undefined ||
+                             this.arena[y + o.y][x + o.x] !== 0)) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }
+
+            destroy() {
+                this.element.remove();
             }
         }
 
-        // --- FUNÇÕES GLOBAIS DE TETRIS ---
-        const COLORS = [null,'#00f0f0','#f0a000','#0000f0','#f0f000','#00f000','#a000f0','#f00000','#555'];
+        // ===================================
+        // LÓGICA DO TETRIS
+        // ===================================
+        const PIECES = {
+            'I': [[0,1,0,0],[0,1,0,0],[0,1,0,0],[0,1,0,0]],
+            'L': [[0,2,0],[0,2,0],[0,2,2]],
+            'J': [[0,3,0],[0,3,0],[3,3,0]],
+            'O': [[4,4],[4,4]],
+            'Z': [[5,5,0],[0,5,5],[0,0,0]],
+            'S': [[0,6,6],[6,6,0],[0,0,0]],
+            'T': [[0,7,0],[7,7,7],[0,0,0]]
+        };
 
-        function createMatrix(w, h) { 
-            const m = []; while(h--) m.push(new Array(w).fill(0)); return m; 
-        }
-
-        function drawMatrix(ctx, matrix, offset) {
-            matrix.forEach((row, y) => { 
-                row.forEach((value, x) => {
-                    if (value !== 0) { 
-                        ctx.fillStyle = COLORS[value]; 
-                        ctx.fillRect(x + offset.x, y + offset.y, 1, 1);
-                        // Efeito de relevo (Borda)
-                        ctx.lineWidth = 0.05; 
-                        ctx.strokeStyle = 'rgba(255,255,255,0.5)'; 
-                        ctx.strokeRect(x + offset.x, y + offset.y, 1, 1); 
-                    }
-                });
-            });
-        }
-
-        function drawGhost(ctx, arena, player) {
-            const ghost = { ...player.pos }; 
-            // Calcula onde vai cair
-            while(!collide(arena, {...player, pos: ghost})) ghost.y++; 
-            ghost.y--;
-            
-            // Desenha transparente
-            player.matrix.forEach((row, y) => { 
-                row.forEach((v, x) => { 
-                    if(v!==0) { 
-                        ctx.fillStyle = 'rgba(255,255,255,0.15)'; 
-                        ctx.fillRect(x+ghost.x, y+ghost.y, 1, 1); 
-                        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-                        ctx.strokeRect(x+ghost.x, y+ghost.y, 1, 1);
-                    }
-                });
-            });
-        }
-
-        function collide(arena, player) {
-            const [m, o] = [player.matrix, player.pos];
-            for(let y=0; y<m.length; ++y) { 
-                for(let x=0; x<m[y].length; ++x) { 
-                    if(m[y][x]!==0 && (arena[y+o.y] && arena[y+o.y][x+o.x])!==0) return true; 
-                }
-            } 
-            return false;
-        }
-
-        let localGame; 
-        let opponents = {};
-
-        function addOpponent(id, data) {
-            const op = new TetrisRenderer(id, false, data.name || "Rival");
-            op.arena = data.matrix || createMatrix(12,20);
-            op.updateWins(data.wins || 0); 
-            op.elScore.innerText = data.score || 0; 
-            opponents[id] = op;
+        function createNewPiece() {
+            const pieces = 'ILJOTSZ';
+            const type = pieces[Math.floor(Math.random() * pieces.length)];
+            return JSON.parse(JSON.stringify(PIECES[type])); // Deep copy
         }
 
         function resetPlayer() {
-            const pieces = 'ILJOTSZ';
-            function getPiece(type) {
-                if (type==='I') return [[0,1,0,0],[0,1,0,0],[0,1,0,0],[0,1,0,0]]; 
-                if (type==='L') return [[0,2,0],[0,2,0],[0,2,2]];
-                if (type==='J') return [[0,3,0],[0,3,0],[3,3,0]]; 
-                if (type==='O') return [[4,4],[4,4]];
-                if (type==='Z') return [[5,5,0],[0,5,5],[0,0,0]]; 
-                if (type==='S') return [[0,6,6],[6,6,0],[0,0,0]];
-                if (type==='T') return [[0,7,0],[7,7,7],[0,0,0]];
-            }
-            localGame.player.matrix = getPiece(pieces[pieces.length * Math.random() | 0]);
-            localGame.player.pos.y = 0; 
-            localGame.player.pos.x = (localGame.arena[0].length / 2 | 0) - (localGame.player.matrix[0].length / 2 | 0);
+            if (!GameState.localGame) return;
+
+            const piece = createNewPiece();
+            GameState.localGame.player.matrix = piece;
+            GameState.localGame.player.pos.y = 0;
+            GameState.localGame.player.pos.x = Math.floor((12 - piece[0].length) / 2);
             
-            // Game Over Instantâneo (Nasceu colidindo)
-            if(collide(localGame.arena, localGame.player)) { 
-                isDead = true; 
-                localGame.element.classList.add('dead'); 
-                socket.emit('playerGameOver'); 
+            // Verifica game over instantâneo
+            if (GameState.localGame.collide(GameState.localGame.player)) {
+                playerDie();
+            } else {
+                emitUpdate();
             }
-            emitUpdate();
+        }
+
+        function playerDie() {
+            console.log('💀 Jogador local morreu');
+            GameState.isDead = true;
+            GameState.localGame.markDead();
+            GameState.socket.emit('playerGameOver');
         }
 
         function rotate(matrix, dir) {
-            for(let y=0; y<matrix.length; ++y) 
-                for(let x=0; x<y; ++x) 
+            // Transpor
+            for (let y = 0; y < matrix.length; ++y) {
+                for (let x = 0; x < y; ++x) {
                     [matrix[x][y], matrix[y][x]] = [matrix[y][x], matrix[x][y]];
-            if(dir>0) matrix.forEach(row=>row.reverse()); 
+                }
+            }
+            // Reverter
+            if (dir > 0) matrix.forEach(row => row.reverse());
             else matrix.reverse();
         }
 
-        function merge(arena, player) {
-            player.matrix.forEach((row, y) => { 
-                row.forEach((value, x) => { 
-                    if(value!==0) arena[y+player.pos.y][x+player.pos.x] = value; 
-                }); 
+        function merge() {
+            const game = GameState.localGame;
+            game.player.matrix.forEach((row, y) => {
+                row.forEach((value, x) => {
+                    if (value !== 0) {
+                        const arenaY = y + game.player.pos.y;
+                        const arenaX = x + game.player.pos.x;
+                        if (arenaY >= 0 && arenaY < game.arena.length &&
+                            arenaX >= 0 && arenaX < game.arena[0].length) {
+                            game.arena[arenaY][arenaX] = value;
+                        }
+                    }
+                });
             });
             emitUpdate();
         }
 
         function arenaSweep() {
-            let count = 0;
-            outer: for(let y=localGame.arena.length-1; y>0; --y) {
-                for(let x=0; x<localGame.arena[y].length; ++x) 
-                    if(localGame.arena[y][x]===0) continue outer;
+            const game = GameState.localGame;
+            let linesCleared = 0;
+            
+            outer: for (let y = game.arena.length - 1; y > 0; --y) {
+                for (let x = 0; x < game.arena[y].length; ++x) {
+                    if (game.arena[y][x] === 0) continue outer;
+                }
                 
-                const row = localGame.arena.splice(y,1)[0].fill(0); 
-                localGame.arena.unshift(row); 
-                ++y; 
-                count++;
+                const row = game.arena.splice(y, 1)[0].fill(0);
+                game.arena.unshift(row);
+                ++y;
+                linesCleared++;
             }
-            if(count > 0) { 
-                localGame.player.score += count * 100; 
-                localGame.elScore.innerText = localGame.player.score; 
-                // Envia Ataque (Lixo para os outros)
-                socket.emit('sendAttack', count); 
+            
+            if (linesCleared > 0) {
+                game.updateScore(game.score + linesCleared * 100);
+                GameState.socket.emit('sendAttack', linesCleared);
+                console.log(`✨ ${linesCleared} linha(s) eliminada(s)`);
             }
         }
 
-        // --- MOVIMENTAÇÃO ---
+        // ===================================
+        // CONTROLES DO JOGADOR
+        // ===================================
         function playerDrop() {
-            if(isDead) return; 
-            localGame.player.pos.y++;
-            if(collide(localGame.arena, localGame.player)) { 
-                localGame.player.pos.y--; 
-                merge(localGame.arena, localGame.player); 
-                resetPlayer(); 
-                arenaSweep(); 
+            if (GameState.isDead || !GameState.localGame) return;
+            
+            GameState.localGame.player.pos.y++;
+            
+            if (GameState.localGame.collide(GameState.localGame.player)) {
+                GameState.localGame.player.pos.y--;
+                merge();
+                resetPlayer();
+                arenaSweep();
             }
-            dropCounter = 0; 
+            
+            GameState.dropCounter = 0;
             emitUpdate();
         }
 
         function playerMove(dir) {
-            if(isDead) return; 
-            localGame.player.pos.x += dir;
-            if(collide(localGame.arena, localGame.player)) localGame.player.pos.x -= dir; 
+            if (GameState.isDead || !GameState.localGame) return;
+            
+            GameState.localGame.player.pos.x += dir;
+            
+            if (GameState.localGame.collide(GameState.localGame.player)) {
+                GameState.localGame.player.pos.x -= dir;
+            }
+            
             emitUpdate();
         }
 
         function playerRotate(dir) {
-            if(isDead) return; 
-            const pos = localGame.player.pos.x; 
-            let offset = 1; 
-            rotate(localGame.player.matrix, dir);
-            while(collide(localGame.arena, localGame.player)) { 
-                localGame.player.pos.x += offset; 
-                offset = -(offset + (offset>0?1:-1));
-                if(offset > localGame.player.matrix[0].length) { 
-                    rotate(localGame.player.matrix, -dir); 
-                    localGame.player.pos.x = pos; 
-                    return; 
-                } 
-            } 
+            if (GameState.isDead || !GameState.localGame) return;
+            
+            const pos = GameState.localGame.player.pos.x;
+            let offset = 1;
+            
+            rotate(GameState.localGame.player.matrix, dir);
+            
+            while (GameState.localGame.collide(GameState.localGame.player)) {
+                GameState.localGame.player.pos.x += offset;
+                offset = -(offset + (offset > 0 ? 1 : -1));
+                
+                if (offset > GameState.localGame.player.matrix[0].length) {
+                    rotate(GameState.localGame.player.matrix, -dir);
+                    GameState.localGame.player.pos.x = pos;
+                    return;
+                }
+            }
+            
             emitUpdate();
         }
 
         function playerHardDrop() {
-            if(isDead) return; 
-            while(!collide(localGame.arena, localGame.player)) localGame.player.pos.y++;
-            localGame.player.pos.y--; 
-            merge(localGame.arena, localGame.player); 
-            resetPlayer(); 
-            arenaSweep(); 
-            dropCounter = 0; 
+            if (GameState.isDead || !GameState.localGame) return;
+            
+            while (!GameState.localGame.collide(GameState.localGame.player)) {
+                GameState.localGame.player.pos.y++;
+            }
+            
+            GameState.localGame.player.pos.y--;
+            merge();
+            resetPlayer();
+            arenaSweep();
+            GameState.dropCounter = 0;
             emitUpdate();
         }
 
-        // --- RECEBIMENTO DE LIXO (SOCKET) ---
-        socket.on('receiveGarbage', (data) => {
-            if(!isGameRunning || isDead) return; 
-            
-            // Remove linhas do topo e adiciona lixo embaixo
-            localGame.arena.splice(0, data.lines);
-            for(let i=0; i<data.lines; i++) localGame.arena.push(new Array(12).fill(8)); // 8 = Cinza
-            
-            // Ajusta posição do jogador para não ser engolido instantaneamente
-            if(collide(localGame.arena, localGame.player)) { 
-                 localGame.player.pos.y -= data.lines; 
-                 // Se mesmo subindo colidir (teto), morre
-                 if(collide(localGame.arena, localGame.player)) {
-                    isDead = true; 
-                    localGame.element.classList.add('dead'); 
-                    socket.emit('playerGameOver'); 
-                 }
-            }
-            emitUpdate();
-        });
-
-        // Envia estado atual para o servidor
+        // ===================================
+        // NETWORKING COM THROTTLE
+        // ===================================
         function emitUpdate() {
-            const display = localGame.arena.map(r=>[...r]);
-            // Desenha peça atual na matriz enviada para que o oponente veja o movimento
-            if(localGame.player.matrix && !isDead) {
-                localGame.player.matrix.forEach((r,y)=>{ 
-                    r.forEach((v,x)=>{ 
-                        if(v!==0 && y+localGame.player.pos.y<20) 
-                            display[y+localGame.player.pos.y][x+localGame.player.pos.x]=v; 
-                    }); 
+            if (!GameState.isConnected || !GameState.localGame) return;
+            
+            const now = Date.now();
+            if (now - GameState.lastEmitTime < GameState.emitThrottle) return;
+            GameState.lastEmitTime = now;
+            
+            const display = GameState.localGame.arena.map(r => [...r]);
+            
+            // Desenha peça atual na matriz
+            if (GameState.localGame.player.matrix && !GameState.isDead) {
+                GameState.localGame.player.matrix.forEach((r, y) => {
+                    r.forEach((v, x) => {
+                        const arenaY = y + GameState.localGame.player.pos.y;
+                        const arenaX = x + GameState.localGame.player.pos.x;
+                        if (v !== 0 && arenaY >= 0 && arenaY < display.length &&
+                            arenaX >= 0 && arenaX < display[0].length) {
+                            display[arenaY][arenaX] = v;
+                        }
+                    });
                 });
             }
-            socket.emit('playerMove', { matrix: display, score: localGame.player.score });
-        }
-        
-        // Outros Sockets
-        socket.on('initSetup', (data) => {}); // Placeholder
-        socket.on('newPlayer', (p) => addOpponent(p.id, p));
-        socket.on('playerLeft', (id) => { if(opponents[id]){opponents[id].element.remove(); delete opponents[id];} });
-        socket.on('playerUpdated', (data) => { 
-            if(opponents[data.id]) { 
-                opponents[data.id].arena = data.matrix; 
-                opponents[data.id].elScore.innerText = data.score; 
-            } 
-        });
-        socket.on('playerDied', (id) => { if(opponents[id]) opponents[id].element.classList.add('dead'); });
-
-        // --- LOOP PRINCIPAL ---
-        let dropCounter = 0; 
-        let lastTime = 0;
-        
-        function update(time = 0) {
-            if(!isGameRunning) return; 
-            const deltaTime = time - lastTime; 
-            lastTime = time;
             
-            if(!isDead) { 
-                dropCounter += deltaTime; 
-                if(dropCounter > dropInterval) playerDrop(); 
+            GameState.socket.emit('playerMove', {
+                matrix: display,
+                score: GameState.localGame.score
+            });
+        }
+
+        function receiveGarbage(lines) {
+            if (!GameState.localGame || GameState.isDead) return;
+            
+            // Remove linhas do topo
+            GameState.localGame.arena.splice(0, lines);
+            
+            // Adiciona lixo embaixo
+            for (let i = 0; i < lines; i++) {
+                GameState.localGame.arena.push(new Array(12).fill(8));
             }
             
-            localGame.draw(); 
-            Object.values(opponents).forEach(op=>op.draw()); 
+            // Ajusta posição do jogador
+            GameState.localGame.player.pos.y -= lines;
+            
+            if (GameState.localGame.player.pos.y < 0) {
+                GameState.localGame.player.pos.y = 0;
+            }
+            
+            // Verifica colisão após receber lixo
+            if (GameState.localGame.collide(GameState.localGame.player)) {
+                playerDie();
+            }
+            
+            emitUpdate();
+        }
+
+        // ===================================
+        // GERENCIAMENTO DE OPONENTES
+        // ===================================
+        function addOpponent(id, data) {
+            if (GameState.opponents[id]) return;
+            
+            const op = new TetrisRenderer(id, false, data.name || "Rival");
+            if (data.matrix) op.arena = data.matrix;
+            if (data.wins !== undefined) op.updateWins(data.wins);
+            if (data.score !== undefined) op.updateScore(data.score);
+            
+            GameState.opponents[id] = op;
+        }
+
+        function removeOpponent(id) {
+            if (GameState.opponents[id]) {
+                GameState.opponents[id].destroy();
+                delete GameState.opponents[id];
+            }
+        }
+
+        function updateOpponent(data) {
+            let op = GameState.opponents[data.id];
+            
+            if (!op) {
+                addOpponent(data.id, data);
+                op = GameState.opponents[data.id];
+            }
+            
+            if (data.matrix) op.arena = data.matrix;
+            if (data.score !== undefined) op.updateScore(data.score);
+            if (data.wins !== undefined) op.updateWins(data.wins);
+        }
+
+        function markOpponentDead(id) {
+            if (GameState.opponents[id]) {
+                GameState.opponents[id].markDead();
+            }
+        }
+
+        // ===================================
+        // CONTROLE DE FLUXO DO JOGO
+        // ===================================
+        function startGame(players) {
+            // Esconde lobby
+            const lobbyScreen = document.getElementById('lobby-screen');
+            lobbyScreen.style.opacity = 0;
+            setTimeout(() => lobbyScreen.style.display = 'none', 300);
+            
+            // Esconde ranking
+            document.getElementById('ranking-screen').style.display = 'none';
+            
+            // Mostra botão de parar
+            document.getElementById('btn-stop').style.display = 'block';
+            
+            // Limpa área de jogo
+            document.getElementById('game-area').innerHTML = '';
+            
+            // Reseta estado
+            GameState.isGameRunning = true;
+            GameState.opponents = {};
+            
+            // Cria tabuleiro local
+            GameState.localGame = new TetrisRenderer(GameState.localPlayerId, true, GameState.localName);
+            
+            // Cria tabuleiros dos oponentes
+            Object.values(players).forEach(p => {
+                if (p.id !== GameState.localPlayerId) {
+                    addOpponent(p.id, p);
+                }
+            });
+
+            // Inicia round
+            startRound();
+            
+            // Toca música
+            if (!musicSynth.isPlaying) toggleMusic();
+        }
+
+        function startRound() {
+            GameState.isDead = false;
+            
+            if (GameState.localGame) {
+                GameState.localGame.revive();
+                GameState.localGame.arena = GameState.localGame.createMatrix(12, 20);
+                resetPlayer();
+            }
+            
+            update();
+        }
+
+        function handleRoundOver(data) {
+            // Atualiza vitórias
+            if (data.winnerId === GameState.localPlayerId) {
+                GameState.localGame.updateWins(data.wins);
+            } else if (GameState.opponents[data.winnerId]) {
+                GameState.opponents[data.winnerId].updateWins(data.wins);
+            }
+
+            // Se a partida acabou
+            if (data.isMatchOver) {
+                showRanking(data.players);
+            }
+        }
+
+        function showRanking(playersData) {
+            GameState.isGameRunning = false;
+            document.getElementById('ranking-screen').style.display = 'block';
+            document.getElementById('btn-stop').style.display = 'none';
+            
+            const tbody = document.getElementById('ranking-body');
+            tbody.innerHTML = '';
+
+            const ranking = Object.values(playersData).sort((a, b) => {
+                if (b.wins !== a.wins) return b.wins - a.wins;
+                return b.score - a.score;
+            });
+
+            ranking.forEach((p, index) => {
+                const tr = document.createElement('tr');
+                const rankClass = index === 0 ? 'rank-1' : (index === 1 ? 'rank-2' : (index === 2 ? 'rank-3' : ''));
+                const displayName = p.id === GameState.localPlayerId ? `${p.name} (Você)` : p.name;
+                
+                tr.innerHTML = `
+                    <td class="${rankClass}">#${index + 1}</td>
+                    <td>${displayName}</td>
+                    <td style="color:#ffe600; font-weight:bold">${p.wins}</td>
+                    <td>${p.score}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function resetToLobby() {
+            GameState.isGameRunning = false;
+            
+            const lobbyScreen = document.getElementById('lobby-screen');
+            lobbyScreen.style.display = 'flex';
+            setTimeout(() => lobbyScreen.style.opacity = 1, 50);
+            
+            document.getElementById('ranking-screen').style.display = 'none';
+            document.getElementById('btn-stop').style.display = 'none';
+            
+            GameState.isLocalReady = false;
+            const btn = document.getElementById('btn-ready');
+            btn.className = 'btn-ready not-ready';
+            btn.innerText = "NÃO ESTOU PRONTO";
+            document.getElementById('inp-name').disabled = false;
+            
+            if (musicSynth.isPlaying) toggleMusic();
+            
+            // Limpa tabuleiros
+            if (GameState.localGame) {
+                GameState.localGame.destroy();
+                GameState.localGame = null;
+            }
+            
+            Object.values(GameState.opponents).forEach(op => op.destroy());
+            GameState.opponents = {};
+        }
+
+        // ===================================
+        // LOOP PRINCIPAL
+        // ===================================
+        GameState.dropCounter = 0;
+        let lastTime = 0;
+
+        function update(time = 0) {
+            if (!GameState.isGameRunning) return;
+            
+            const deltaTime = time - lastTime;
+            lastTime = time;
+            
+            if (!GameState.isDead && GameState.localGame) {
+                GameState.dropCounter += deltaTime;
+                if (GameState.dropCounter > GameState.dropInterval) {
+                    playerDrop();
+                }
+            }
+            
+            if (GameState.localGame) GameState.localGame.draw();
+            Object.values(GameState.opponents).forEach(op => op.draw());
+            
             requestAnimationFrame(update);
         }
 
-        // --- INPUTS ---
+        // ===================================
+        // INPUT DO TECLADO
+        // ===================================
         document.addEventListener('keydown', event => {
-            if(!isGameRunning) return;
-            if(event.keyCode===37) playerMove(-1);
-            else if(event.keyCode===39) playerMove(1);
-            else if(event.keyCode===40) playerDrop();
-            else if(event.keyCode===38) playerRotate(1);
-            else if(event.keyCode===32) playerHardDrop();
+            if (!GameState.isGameRunning || GameState.isDead) return;
+            
+            switch(event.keyCode) {
+                case 37: // Esquerda
+                    playerMove(-1);
+                    break;
+                case 39: // Direita
+                    playerMove(1);
+                    break;
+                case 40: // Baixo
+                    playerDrop();
+                    break;
+                case 38: // Cima (Rotacionar)
+                    playerRotate(1);
+                    break;
+                case 32: // Espaço (Hard Drop)
+                    event.preventDefault();
+                    playerHardDrop();
+                    break;
+            }
         });
+
+        // ===================================
+        // INICIALIZAÇÃO
+        // ===================================
+        initSocket();
     </script>
 </body>
 </html>
