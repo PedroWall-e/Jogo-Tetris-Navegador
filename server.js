@@ -12,11 +12,11 @@ let gameSettings = { speed: 1, winLimit: 3 };
 let isMatchRunning = false;
 
 io.on('connection', (socket) => {
-    console.log('Novo jogador:', socket.id);
+    console.log('Jogador conectado:', socket.id);
 
     players[socket.id] = {
         id: socket.id,
-        name: "Jogador " + socket.id.substr(0,4), // Nome provisório
+        name: "Jogador",
         matrix: [],
         score: 0,
         wins: 0,
@@ -27,42 +27,38 @@ io.on('connection', (socket) => {
     socket.emit('initSetup', { players, settings: gameSettings, isRunning: isMatchRunning });
     socket.broadcast.emit('newPlayer', players[socket.id]);
 
-    // Atualiza Configurações
     socket.on('changeSettings', (newSettings) => {
         gameSettings = { ...gameSettings, ...newSettings };
         io.emit('updateSettings', gameSettings);
     });
 
-    // Jogador define PRONTO e envia NOME
     socket.on('playerReady', (data) => {
         if (players[socket.id]) {
             players[socket.id].isReady = data.state;
-            players[socket.id].name = data.name || "Sem Nome"; // Salva o nome
-            
+            players[socket.id].name = data.name || "Sem Nome";
             io.emit('updatePlayerList', players);
 
-            // Verifica início do jogo
             const allReady = Object.values(players).every(p => p.isReady);
             const playerCount = Object.keys(players).length;
 
             if (allReady && playerCount > 0 && !isMatchRunning) {
                 isMatchRunning = true;
-                Object.values(players).forEach(p => { p.isAlive = true; });
-                io.emit('startGame', players); // Envia lista atualizada com nomes
+                Object.values(players).forEach(p => p.isAlive = true);
+                io.emit('startGame', players);
             }
         }
     });
 
-    // Movimento
     socket.on('playerMove', (data) => {
         if (players[socket.id]) {
+            // Apenas atualiza o estado para quem chegar depois ou espectadores
             players[socket.id].matrix = data.matrix;
             players[socket.id].score = data.score;
+            // Retransmite para os oponentes desenharem
             socket.broadcast.emit('playerUpdated', players[socket.id]);
         }
     });
 
-    // Game Over Individual
     socket.on('playerGameOver', () => {
         if (players[socket.id]) {
             players[socket.id].isAlive = false;
@@ -71,12 +67,11 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Ataque (Lixo)
+    // CORREÇÃO DO LIXO: O servidor apenas repassa a quantidade
     socket.on('sendAttack', (lines) => {
         socket.broadcast.emit('receiveGarbage', { senderId: socket.id, lines });
     });
 
-    // RESET TOTAL (Botão Parar)
     socket.on('requestReset', () => {
         isMatchRunning = false;
         Object.values(players).forEach(p => {
@@ -100,26 +95,22 @@ function checkRoundWinner() {
     const alivePlayers = Object.values(players).filter(p => p.isAlive);
     const totalPlayers = Object.keys(players).length;
 
-    // Condição de Vitória do Round
     if (alivePlayers.length === 1 && totalPlayers > 1) {
         const winner = alivePlayers[0];
         winner.wins++;
-        
         io.emit('roundOver', { 
             winnerId: winner.id, 
             wins: winner.wins,
             isMatchOver: winner.wins >= gameSettings.winLimit,
-            players: players // Envia dados para o Ranking
+            players 
         });
-
         if (winner.wins < gameSettings.winLimit) {
             setTimeout(() => {
                 Object.values(players).forEach(p => p.isAlive = true);
                 io.emit('startNextRound');
             }, 3000);
         }
-    } 
-    else if (alivePlayers.length === 0) {
+    } else if (alivePlayers.length === 0) {
         io.emit('roundOver', { winnerId: null, isMatchOver: false, players });
         setTimeout(() => {
             Object.values(players).forEach(p => p.isAlive = true);
@@ -129,5 +120,5 @@ function checkRoundWinner() {
 }
 
 server.listen(3000, () => {
-    console.log('Servidor Atualizado rodando na porta 3000');
+    console.log('Servidor rodando na porta 3000');
 });
