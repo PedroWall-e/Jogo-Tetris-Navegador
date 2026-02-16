@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Tetris Battle 8-Bit</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Fredoka+One&display=swap');
+
+        body {
+            margin: 0;
+            background: #202028;
+            color: white;
+            font-family: 'Fredoka One', cursive;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            overflow: hidden;
+        }
+
+        /* --- LOBBY --- */
+        #lobby-screen {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.95);
+            z-index: 100;
+            display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            transition: opacity 0.3s;
+        }
+
+        .settings-box {
+            background: #333; padding: 25px; border-radius: 15px;
+            border: 2px solid #555; text-align: center; width: 320px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+
+        .input-group { margin-bottom: 15px; text-align: left; }
+        label { color: #aaa; font-size: 0.9rem; margin-bottom: 5px; display: block; }
+        
+        input[type="text"] {
+            padding: 12px; border-radius: 8px; border: none;
+            width: 100%; box-sizing: border-box; font-family: inherit; font-size: 1.1rem;
+            text-align: center; background: #222; color: #fff; border: 2px solid #444;
+        }
+        input[type="text"]:focus { outline: none; border-color: #ffe600; }
+
+        input[type="range"] { width: 100%; accent-color: #ffe600; }
+        
+        select { 
+            width: 100%; padding: 10px; background: #222; color: white; 
+            border: 2px solid #444; border-radius: 8px; font-family: inherit; 
+        }
+
+        .btn-ready {
+            margin-top: 25px; padding: 15px 50px; border-radius: 50px;
+            border: none; font-size: 1.3rem; cursor: pointer; font-family: inherit;
+            transition: 0.2s; width: 100%; text-transform: uppercase;
+        }
+        .not-ready { background: #ff4757; color: white; box-shadow: 0 5px 0 #b71524; }
+        .not-ready:active { transform: translateY(4px); box-shadow: none; }
+        
+        .is-ready { background: #2ed573; color: white; box-shadow: 0 5px 0 #1e8e4a; }
+        .is-ready:active { transform: translateY(4px); box-shadow: none; }
+
+        /* --- JOGO --- */
+        #game-area {
+            display: flex; gap: 20px; margin-top: 60px;
+            flex-wrap: wrap; justify-content: center;
+            width: 100%; padding-bottom: 20px;
+        }
+
+        .player-card {
+            background: #151515; padding: 10px; border-radius: 12px;
+            border: 3px solid #444; position: relative;
+            min-width: 240px; transition: transform 0.2s;
+        }
+        .player-card.local { border-color: #ffe600; box-shadow: 0 0 25px rgba(255,230,0,0.15); transform: scale(1.02); }
+        .player-card.dead canvas { opacity: 0.3; filter: grayscale(100%); }
+        .player-card.dead::after {
+            content: "GAME OVER"; position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%); font-size: 2rem; color: #ff4757;
+            text-shadow: 2px 2px 0 #000;
+        }
+
+        canvas { background: #000; display: block; margin: 0 auto; border-radius: 4px; }
+
+        .name-tag { font-size: 1.2rem; color: #fff; margin-bottom: 8px; text-shadow: 1px 1px 2px black; text-align: center; }
+        .stats-row { 
+            display: flex; justify-content: space-between; font-size: 1rem; 
+            color: #aaa; margin-top: 8px; padding: 0 5px; 
+        }
+        .win-count { color: #ffe600; font-weight: bold; }
+
+        /* --- HUD --- */
+        #hud {
+            position: absolute; top: 0; width: 100%; padding: 15px 30px;
+            display: flex; justify-content: space-between; background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(5px); z-index: 50; box-sizing: border-box;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .hud-btn {
+            background: #444; color: white; border: none; padding: 10px 20px;
+            border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 0.9rem;
+            transition: background 0.2s;
+        }
+        .hud-btn:hover { background: #666; }
+        .btn-stop { background: #d32f2f; }
+        .btn-stop:hover { background: #b71c1c; }
+
+        /* --- RANKING --- */
+        #ranking-screen {
+            position: fixed; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            background: #202028;
+            padding: 40px; border-radius: 20px;
+            border: 4px solid #ffe600; box-shadow: 0 0 50px rgba(0,0,0,0.8);
+            text-align: center; display: none; z-index: 200;
+            min-width: 450px;
+        }
+        
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; color: white; }
+        th { text-align: left; border-bottom: 2px solid #555; padding: 10px; color: #ffe600; }
+        td { text-align: left; padding: 12px 10px; border-bottom: 1px solid #333; }
+        
+        .rank-1 { color: #ffe600; font-size: 1.3rem; } /* Ouro */
+        .rank-2 { color: #c0c0c0; } /* Prata */
+        .rank-3 { color: #cd7f32; } /* Bronze */
+
+    </style>
+</head>
+<body>
+
+    <div id="lobby-screen">
+        <h1 style="font-size: 3.5rem; color: #ffe600; margin-bottom: 20px; text-shadow: 4px 4px 0 #d32f2f;">TETRIS BATTLE</h1>
+        
+        <div class="settings-box">
+            <div class="input-group">
+                <label>Seu Nome</label>
+                <input type="text" id="inp-name" placeholder="Digite seu Nickname" maxlength="10">
+            </div>
+
+            <div class="input-group">
+                <label>Velocidade: <span id="disp-speed" style="color:#fff">1</span></label>
+                <input type="range" id="inp-speed" min="1" max="20" value="1" oninput="emitSettings()">
+            </div>
+
+            <div class="input-group">
+                <label>Modo de Jogo</label>
+                <select id="inp-wins" onchange="emitSettings()">
+                    <option value="1">Morte Súbita (1 Vitória)</option>
+                    <option value="3" selected>Melhor de 3</option>
+                    <option value="5">Melhor de 5</option>
+                </select>
+            </div>
+            
+            <button id="btn-ready" class="btn-ready not-ready" onclick="toggleReady()">NÃO ESTOU PRONTO</button>
+        </div>
+
+        <div id="lobby-status" style="margin-top:20px; color:#aaa; font-size: 1.1rem;">Aguardando conexão...</div>
+    </div>
+
+    <div id="hud">
+        <button class="hud-btn" id="btn-music" onclick="toggleMusic()">🔇 Música: OFF</button>
+        <button class="hud-btn btn-stop" id="btn-stop" style="display:none;" onclick="requestReset()">⏹ PARAR PARTIDA</button>
+    </div>
+
+    <div id="game-area"></div>
+
+    <div id="ranking-screen">
+        <h2 style="color:#ffe600; font-size:3rem; margin:0; text-shadow: 2px 2px 0 #000;">FIM DE JOGO</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Nome</th>
+                    <th>Vitórias</th>
+                    <th>Pontos</th>
+                </tr>
+            </thead>
+            <tbody id="ranking-body">
+                </tbody>
+        </table>
+        <button class="btn-ready is-ready" onclick="requestReset()">VOLTAR AO LOBBY</button>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        
+        // --- ELEMENTOS HTML ---
+        const lobbyScreen = document.getElementById('lobby-screen');
+        const rankingScreen = document.getElementById('ranking-screen');
+        const gameArea = document.getElementById('game-area');
+        const btnStop = document.getElementById('btn-stop');
+        const btnMusic = document.getElementById('btn-music');
+        
+        // --- ESTADO DO JOGO ---
+        let isGameRunning = false;
+        let isLocalReady = false;
+        let isDead = false;
+        let localName = "";
+        let dropInterval = 1000;
+        
+        // --- SINTETIZADOR DE MÚSICA 8-BIT (Gerado via Código) ---
+        class TetrisSynth {
+            constructor() {
+                this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                this.isPlaying = false;
+                this.tempo = 145; // Um pouco mais rápido pra dar emoção
+                this.nextNoteTime = 0;
+                this.noteIndex = 0;
+                this.timerID = null;
+                
+                // Frequências das notas (Tabela padrão)
+                this.notes = {
+                    'E5': 659.25, 'B4': 493.88, 'C5': 523.25, 'D5': 587.33, 'A4': 440.00,
+                    'G#4': 415.30, 'G4': 392.00, 'F4': 349.23, 'E4': 329.63
+                };
+
+                // Partitura simplificada do Tetris (Korobeiniki)
+                this.melody = [
+                    ['E5', 1], ['B4', 0.5], ['C5', 0.5], ['D5', 1], ['C5', 0.5], ['B4', 0.5],
+                    ['A4', 1], ['A4', 0.5], ['C5', 0.5], ['E5', 1], ['D5', 0.5], ['C5', 0.5],
+                    ['B4', 1.5], ['C5', 0.5], ['D5', 1], ['E5', 1],
+                    ['C5', 1], ['A4', 1], ['A4', 1], [null, 1], // Pausa
+                    ['D5', 1.5], ['F4', 0.5], ['A4', 1], ['G4', 0.5], ['F4', 0.5],
+                    ['E5', 1.5], ['C5', 0.5], ['E5', 1], ['D5', 0.5], ['C5', 0.5],
+                    ['B4', 1], ['B4', 0.5], ['C5', 0.5], ['D5', 1], ['E5', 1],
+                    ['C5', 1], ['A4', 1], ['A4', 1], [null, 1]
+                ];
+            }
+
+            scheduleNote() {
+                const secondsPerBeat = 60.0 / this.tempo;
+                
+                while (this.nextNoteTime < this.ctx.currentTime + 0.1) {
+                    const note = this.melody[this.noteIndex];
+                    
+                    if (note[0]) { 
+                        const osc = this.ctx.createOscillator();
+                        const gain = this.ctx.createGain();
+                        
+                        osc.type = 'square'; // Onda quadrada = som de Nintendinho
+                        osc.frequency.value = this.notes[note[0]];
+                        
+                        // Volume e Envelope (Fade out curto)
+                        gain.gain.value = 0.05; 
+                        gain.gain.exponentialRampToValueAtTime(0.001, this.nextNoteTime + (note[1] * secondsPerBeat));
+
+                        osc.connect(gain);
+                        gain.connect(this.ctx.destination);
+                        
+                        osc.start(this.nextNoteTime);
+                        osc.stop(this.nextNoteTime + (note[1] * secondsPerBeat));
+                    }
+
+                    this.nextNoteTime += note[1] * secondsPerBeat;
+                    this.noteIndex = (this.noteIndex + 1) % this.melody.length;
+                }
+                
+                if (this.isPlaying) {
+                    this.timerID = requestAnimationFrame(this.scheduleNote.bind(this));
+                }
+            }
+
+            play() {
+                if (this.ctx.state === 'suspended') this.ctx.resume();
+                if (!this.isPlaying) {
+                    this.isPlaying = true;
+                    this.nextNoteTime = this.ctx.currentTime + 0.1;
+                    this.scheduleNote();
+                }
+            }
+
+            stop() {
+                this.isPlaying = false;
+                cancelAnimationFrame(this.timerID);
+            }
+        }
+
+        // Instancia o Sintetizador
+        const musicSynth = new TetrisSynth();
+
+        function toggleMusic() {
+            if (!musicSynth.isPlaying) {
+                musicSynth.play();
+                btnMusic.innerText = "🔊 Música: ON";
+                btnMusic.style.background = "#2ed573";
+                btnMusic.style.color = "#000";
+            } else {
+                musicSynth.stop();
+                btnMusic.innerText = "🔇 Música: OFF";
+                btnMusic.style.background = "#444";
+                btnMusic.style.color = "#fff";
+            }
+        }
+
+        // Tenta destravar o áudio do navegador no primeiro clique
+        document.body.addEventListener('click', () => {
+            if (musicSynth.ctx.state === 'suspended') musicSynth.ctx.resume();
+        }, { once: true });
+
+
+        // --- LÓGICA DO LOBBY ---
+        function emitSettings() {
+            const speed = document.getElementById('inp-speed').value;
+            const wins = document.getElementById('inp-wins').value;
+            socket.emit('changeSettings', { speed: parseInt(speed), winLimit: parseInt(wins) });
+        }
+
+        function toggleReady() {
+            const nameInput = document.getElementById('inp-name');
+            if(nameInput.value.trim() === "") {
+                alert("Por favor, digite um Nickname antes de começar!");
+                return;
+            }
+            localName = nameInput.value;
+            
+            isLocalReady = !isLocalReady;
+            const btn = document.getElementById('btn-ready');
+            
+            if (isLocalReady) {
+                btn.className = 'btn-ready is-ready';
+                btn.innerText = "AGUARDANDO...";
+                nameInput.disabled = true;
+                // Destrava áudio aqui também por garantia
+                if (musicSynth.ctx.state === 'suspended') musicSynth.ctx.resume();
+            } else {
+                btn.className = 'btn-ready not-ready';
+                btn.innerText = "NÃO ESTOU PRONTO";
+                nameInput.disabled = false;
+            }
+            
+            socket.emit('playerReady', { state: isLocalReady, name: localName });
+        }
+
+        // Sincroniza configurações vindas do servidor
+        socket.on('updateSettings', (settings) => {
+            document.getElementById('inp-speed').value = settings.speed;
+            document.getElementById('disp-speed').innerText = settings.speed;
+            document.getElementById('inp-wins').value = settings.winLimit;
+            // Cálculo de velocidade: Nível 1 = 1000ms, Nível 20 = ~50ms
+            dropInterval = Math.max(50, 1000 - ((settings.speed - 1) * 45));
+        });
+
+        socket.on('updatePlayerList', (players) => {
+            const total = Object.keys(players).length;
+            const ready = Object.values(players).filter(p => p.isReady).length;
+            document.getElementById('lobby-status').innerText = `${ready} de ${total} jogadores prontos`;
+        });
+
+        // --- INÍCIO DE JOGO ---
+        socket.on('startGame', (players) => {
+            lobbyScreen.style.opacity = 0;
+            setTimeout(() => lobbyScreen.style.display = 'none', 300);
+            rankingScreen.style.display = 'none';
+            btnStop.style.display = 'block';
+            
+            isGameRunning = true;
+            
+            gameArea.innerHTML = ''; 
+            opponents = {}; 
+            
+            // Cria tabuleiro local
+            localGame = new TetrisRenderer('local', true, localName);
+            
+            // Cria tabuleiros dos oponentes
+            Object.values(players).forEach(p => {
+                if(p.id !== socket.id) addOpponent(p.id, p);
+            });
+
+            startRound();
+            
+            // Toca a música automaticamente se não estiver tocando
+            if(!musicSynth.isPlaying) toggleMusic();
+        });
+
+        function startRound() {
+            isDead = false;
+            localGame.element.classList.remove('dead');
+            resetPlayer();
+            update();
+        }
+
+        socket.on('startNextRound', () => {
+            startRound();
+        });
+
+        // --- RESET / PARAR ---
+        function requestReset() {
+            if(confirm("Parar a partida e voltar todos para o Lobby?")) {
+                socket.emit('requestReset');
+            }
+        }
+
+        socket.on('resetToLobby', () => {
+            isGameRunning = false;
+            lobbyScreen.style.display = 'flex';
+            setTimeout(() => lobbyScreen.style.opacity = 1, 50);
+            rankingScreen.style.display = 'none';
+            btnStop.style.display = 'none';
+            
+            isLocalReady = false;
+            const btn = document.getElementById('btn-ready');
+            btn.className = 'btn-ready not-ready';
+            btn.innerText = "NÃO ESTOU PRONTO";
+            document.getElementById('inp-name').disabled = false;
+            
+            if(musicSynth.isPlaying) toggleMusic(); // Para a música no lobby
+        });
+
+        // --- FIM DE ROUND / RANKING ---
+        socket.on('roundOver', (data) => {
+            // Atualiza vitórias visualmente
+            if(data.winnerId === socket.id) localGame.updateWins(data.wins);
+            else if(opponents[data.winnerId]) opponents[data.winnerId].updateWins(data.wins);
+
+            // Se acabou a partida (Melhor de X)
+            if (data.isMatchOver) {
+                showRanking(data.players);
+            }
+        });
+
+        function showRanking(playersData) {
+            isGameRunning = false;
+            rankingScreen.style.display = 'block';
+            btnStop.style.display = 'none';
+            
+            const tbody = document.getElementById('ranking-body');
+            tbody.innerHTML = '';
+
+            // Ordena: Mais vitórias > Mais pontos
+            const ranking = Object.values(playersData).sort((a, b) => {
+                if (b.wins !== a.wins) return b.wins - a.wins;
+                return b.score - a.score;
+            });
+
+            ranking.forEach((p, index) => {
+                const tr = document.createElement('tr');
+                let rankClass = index === 0 ? 'rank-1' : (index === 1 ? 'rank-2' : (index === 2 ? 'rank-3' : ''));
+                let displayName = p.id === socket.id ? `${p.name} (Você)` : p.name;
+                
+                tr.innerHTML = `
+                    <td class="${rankClass}">#${index + 1}</td>
+                    <td>${displayName}</td>
+                    <td style="color:#ffe600; font-weight:bold">${p.wins}</td>
+                    <td>${p.score}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        // --- CLASSE RENDERIZADORA (Visual) ---
+        class TetrisRenderer {
+            constructor(id, isLocal, name) {
+                this.id = id; 
+                this.isLocal = isLocal; 
+                this.name = name;
+                
+                this.element = document.createElement('div');
+                this.element.className = isLocal ? 'player-card local' : 'player-card';
+                this.element.innerHTML = `
+                    <div class="name-tag">${name}</div>
+                    <canvas width="240" height="400"></canvas>
+                    <div class="stats-row">
+                        <span>PTS: <span class="score-val">0</span></span>
+                        <span>VIT: <span class="win-count">0</span></span>
+                    </div>
+                `;
+                
+                // Coloca o jogador local sempre no começo da lista
+                if(isLocal) gameArea.prepend(this.element); 
+                else gameArea.appendChild(this.element);
+
+                this.canvas = this.element.querySelector('canvas');
+                this.ctx = this.canvas.getContext('2d'); 
+                this.ctx.scale(20, 20); // 1 bloco = 20px
+                
+                this.elScore = this.element.querySelector('.score-val'); 
+                this.elWins = this.element.querySelector('.win-count');
+                
+                this.arena = createMatrix(12, 20);
+                this.player = { pos: {x:0,y:0}, matrix: null, score: 0 };
+            }
+
+            updateWins(n) { this.elWins.innerText = n; }
+
+            draw() {
+                // Fundo
+                this.ctx.fillStyle = '#000'; 
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                
+                // Arena (Blocos fixos + Lixo)
+                drawMatrix(this.ctx, this.arena, {x:0,y:0});
+                
+                // Peça atual + Ghost
+                if(this.isLocal && !isDead && this.player.matrix) {
+                    drawGhost(this.ctx, this.arena, this.player);
+                    drawMatrix(this.ctx, this.player.matrix, this.player.pos);
+                }
+            }
+        }
+
+        // --- FUNÇÕES GLOBAIS DE TETRIS ---
+        const COLORS = [null,'#00f0f0','#f0a000','#0000f0','#f0f000','#00f000','#a000f0','#f00000','#555'];
+
+        function createMatrix(w, h) { 
+            const m = []; while(h--) m.push(new Array(w).fill(0)); return m; 
+        }
+
+        function drawMatrix(ctx, matrix, offset) {
+            matrix.forEach((row, y) => { 
+                row.forEach((value, x) => {
+                    if (value !== 0) { 
+                        ctx.fillStyle = COLORS[value]; 
+                        ctx.fillRect(x + offset.x, y + offset.y, 1, 1);
+                        // Efeito de relevo (Borda)
+                        ctx.lineWidth = 0.05; 
+                        ctx.strokeStyle = 'rgba(255,255,255,0.5)'; 
+                        ctx.strokeRect(x + offset.x, y + offset.y, 1, 1); 
+                    }
+                });
+            });
+        }
+
+        function drawGhost(ctx, arena, player) {
+            const ghost = { ...player.pos }; 
+            // Calcula onde vai cair
+            while(!collide(arena, {...player, pos: ghost})) ghost.y++; 
+            ghost.y--;
+            
+            // Desenha transparente
+            player.matrix.forEach((row, y) => { 
+                row.forEach((v, x) => { 
+                    if(v!==0) { 
+                        ctx.fillStyle = 'rgba(255,255,255,0.15)'; 
+                        ctx.fillRect(x+ghost.x, y+ghost.y, 1, 1); 
+                        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+                        ctx.strokeRect(x+ghost.x, y+ghost.y, 1, 1);
+                    }
+                });
+            });
+        }
+
+        function collide(arena, player) {
+            const [m, o] = [player.matrix, player.pos];
+            for(let y=0; y<m.length; ++y) { 
+                for(let x=0; x<m[y].length; ++x) { 
+                    if(m[y][x]!==0 && (arena[y+o.y] && arena[y+o.y][x+o.x])!==0) return true; 
+                }
+            } 
+            return false;
+        }
+
+        let localGame; 
+        let opponents = {};
+
+        function addOpponent(id, data) {
+            const op = new TetrisRenderer(id, false, data.name || "Rival");
+            op.arena = data.matrix || createMatrix(12,20);
+            op.updateWins(data.wins || 0); 
+            op.elScore.innerText = data.score || 0; 
+            opponents[id] = op;
+        }
+
+        function resetPlayer() {
+            const pieces = 'ILJOTSZ';
+            function getPiece(type) {
+                if (type==='I') return [[0,1,0,0],[0,1,0,0],[0,1,0,0],[0,1,0,0]]; 
+                if (type==='L') return [[0,2,0],[0,2,0],[0,2,2]];
+                if (type==='J') return [[0,3,0],[0,3,0],[3,3,0]]; 
+                if (type==='O') return [[4,4],[4,4]];
+                if (type==='Z') return [[5,5,0],[0,5,5],[0,0,0]]; 
+                if (type==='S') return [[0,6,6],[6,6,0],[0,0,0]];
+                if (type==='T') return [[0,7,0],[7,7,7],[0,0,0]];
+            }
+            localGame.player.matrix = getPiece(pieces[pieces.length * Math.random() | 0]);
+            localGame.player.pos.y = 0; 
+            localGame.player.pos.x = (localGame.arena[0].length / 2 | 0) - (localGame.player.matrix[0].length / 2 | 0);
+            
+            // Game Over Instantâneo (Nasceu colidindo)
+            if(collide(localGame.arena, localGame.player)) { 
+                isDead = true; 
+                localGame.element.classList.add('dead'); 
+                socket.emit('playerGameOver'); 
+            }
+            emitUpdate();
+        }
+
+        function rotate(matrix, dir) {
+            for(let y=0; y<matrix.length; ++y) 
+                for(let x=0; x<y; ++x) 
+                    [matrix[x][y], matrix[y][x]] = [matrix[y][x], matrix[x][y]];
+            if(dir>0) matrix.forEach(row=>row.reverse()); 
+            else matrix.reverse();
+        }
+
+        function merge(arena, player) {
+            player.matrix.forEach((row, y) => { 
+                row.forEach((value, x) => { 
+                    if(value!==0) arena[y+player.pos.y][x+player.pos.x] = value; 
+                }); 
+            });
+            emitUpdate();
+        }
+
+        function arenaSweep() {
+            let count = 0;
+            outer: for(let y=localGame.arena.length-1; y>0; --y) {
+                for(let x=0; x<localGame.arena[y].length; ++x) 
+                    if(localGame.arena[y][x]===0) continue outer;
+                
+                const row = localGame.arena.splice(y,1)[0].fill(0); 
+                localGame.arena.unshift(row); 
+                ++y; 
+                count++;
+            }
+            if(count > 0) { 
+                localGame.player.score += count * 100; 
+                localGame.elScore.innerText = localGame.player.score; 
+                // Envia Ataque (Lixo para os outros)
+                socket.emit('sendAttack', count); 
+            }
+        }
+
+        // --- MOVIMENTAÇÃO ---
+        function playerDrop() {
+            if(isDead) return; 
+            localGame.player.pos.y++;
+            if(collide(localGame.arena, localGame.player)) { 
+                localGame.player.pos.y--; 
+                merge(localGame.arena, localGame.player); 
+                resetPlayer(); 
+                arenaSweep(); 
+            }
+            dropCounter = 0; 
+            emitUpdate();
+        }
+
+        function playerMove(dir) {
+            if(isDead) return; 
+            localGame.player.pos.x += dir;
+            if(collide(localGame.arena, localGame.player)) localGame.player.pos.x -= dir; 
+            emitUpdate();
+        }
+
+        function playerRotate(dir) {
+            if(isDead) return; 
+            const pos = localGame.player.pos.x; 
+            let offset = 1; 
+            rotate(localGame.player.matrix, dir);
+            while(collide(localGame.arena, localGame.player)) { 
+                localGame.player.pos.x += offset; 
+                offset = -(offset + (offset>0?1:-1));
+                if(offset > localGame.player.matrix[0].length) { 
+                    rotate(localGame.player.matrix, -dir); 
+                    localGame.player.pos.x = pos; 
+                    return; 
+                } 
+            } 
+            emitUpdate();
+        }
+
+        function playerHardDrop() {
+            if(isDead) return; 
+            while(!collide(localGame.arena, localGame.player)) localGame.player.pos.y++;
+            localGame.player.pos.y--; 
+            merge(localGame.arena, localGame.player); 
+            resetPlayer(); 
+            arenaSweep(); 
+            dropCounter = 0; 
+            emitUpdate();
+        }
+
+        // --- RECEBIMENTO DE LIXO (SOCKET) ---
+        socket.on('receiveGarbage', (data) => {
+            if(!isGameRunning || isDead) return; 
+            
+            // Remove linhas do topo e adiciona lixo embaixo
+            localGame.arena.splice(0, data.lines);
+            for(let i=0; i<data.lines; i++) localGame.arena.push(new Array(12).fill(8)); // 8 = Cinza
+            
+            // Ajusta posição do jogador para não ser engolido instantaneamente
+            if(collide(localGame.arena, localGame.player)) { 
+                 localGame.player.pos.y -= data.lines; 
+                 // Se mesmo subindo colidir (teto), morre
+                 if(collide(localGame.arena, localGame.player)) {
+                    isDead = true; 
+                    localGame.element.classList.add('dead'); 
+                    socket.emit('playerGameOver'); 
+                 }
+            }
+            emitUpdate();
+        });
+
+        // Envia estado atual para o servidor
+        function emitUpdate() {
+            const display = localGame.arena.map(r=>[...r]);
+            // Desenha peça atual na matriz enviada para que o oponente veja o movimento
+            if(localGame.player.matrix && !isDead) {
+                localGame.player.matrix.forEach((r,y)=>{ 
+                    r.forEach((v,x)=>{ 
+                        if(v!==0 && y+localGame.player.pos.y<20) 
+                            display[y+localGame.player.pos.y][x+localGame.player.pos.x]=v; 
+                    }); 
+                });
+            }
+            socket.emit('playerMove', { matrix: display, score: localGame.player.score });
+        }
+        
+        // Outros Sockets
+        socket.on('initSetup', (data) => {}); // Placeholder
+        socket.on('newPlayer', (p) => addOpponent(p.id, p));
+        socket.on('playerLeft', (id) => { if(opponents[id]){opponents[id].element.remove(); delete opponents[id];} });
+        socket.on('playerUpdated', (data) => { 
+            if(opponents[data.id]) { 
+                opponents[data.id].arena = data.matrix; 
+                opponents[data.id].elScore.innerText = data.score; 
+            } 
+        });
+        socket.on('playerDied', (id) => { if(opponents[id]) opponents[id].element.classList.add('dead'); });
+
+        // --- LOOP PRINCIPAL ---
+        let dropCounter = 0; 
+        let lastTime = 0;
+        
+        function update(time = 0) {
+            if(!isGameRunning) return; 
+            const deltaTime = time - lastTime; 
+            lastTime = time;
+            
+            if(!isDead) { 
+                dropCounter += deltaTime; 
+                if(dropCounter > dropInterval) playerDrop(); 
+            }
+            
+            localGame.draw(); 
+            Object.values(opponents).forEach(op=>op.draw()); 
+            requestAnimationFrame(update);
+        }
+
+        // --- INPUTS ---
+        document.addEventListener('keydown', event => {
+            if(!isGameRunning) return;
+            if(event.keyCode===37) playerMove(-1);
+            else if(event.keyCode===39) playerMove(1);
+            else if(event.keyCode===40) playerDrop();
+            else if(event.keyCode===38) playerRotate(1);
+            else if(event.keyCode===32) playerHardDrop();
+        });
+    </script>
+</body>
+</html>
